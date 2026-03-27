@@ -6,15 +6,20 @@
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
+#include "vwl-vout-image-capture-source-unstable-v1-client-protocol.h"
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/param.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
 #include <assert.h>
 #include <wayland-client-protocol.h>
 #include <xf86drm.h>
@@ -26,12 +31,28 @@
 #include "logger.h"
 #include "fps_limit.h"
 
+static bool use_ext_image_copy_capture(struct xdpw_screencast_instance *cast) {
+	if (cast->ctx->ext_image_copy_capture_manager == NULL) {
+		return false;
+	}
+
+	switch (cast->target->type) {
+	case MONITOR:
+		return cast->ctx->ext_output_image_capture_source_manager != NULL;
+	case WINDOW:
+		return cast->ctx->ext_foreign_toplevel_image_capture_source_manager != NULL;
+	case VOUT:
+		return cast->ctx->vwl_vout_image_capture_source_manager != NULL;
+	}
+
+	return false;
+}
+
 static void wlr_frame_capture_start(struct xdpw_screencast_instance *cast) {
 	fps_limit_measure_start(&cast->fps_limit, cast->framerate);
-	if (cast->ctx->ext_image_copy_capture_manager
-			&& cast->ctx->ext_output_image_capture_source_manager) {
+	if (use_ext_image_copy_capture(cast)) {
 		xdpw_ext_ic_frame_capture(cast);
-	} else if (cast->ctx->screencopy_manager) {
+	} else if (cast->target->type == MONITOR && cast->ctx->screencopy_manager) {
 		xdpw_wlr_sc_frame_capture(cast);
 	}
 }
@@ -50,19 +71,17 @@ void xdpw_wlr_frame_capture(struct xdpw_screencast_instance *cast) {
 }
 
 void xdpw_wlr_session_close(struct xdpw_screencast_instance *cast) {
-	if (cast->ctx->ext_image_copy_capture_manager
-			&& cast->ctx->ext_output_image_capture_source_manager) {
+	if (use_ext_image_copy_capture(cast)) {
 		xdpw_ext_ic_session_close(cast);
-	} else if (cast->ctx->screencopy_manager) {
+	} else if (cast->target->type == MONITOR && cast->ctx->screencopy_manager) {
 		xdpw_wlr_sc_session_close(cast);
 	}
 }
 
 int xdpw_wlr_session_init(struct xdpw_screencast_instance *cast) {
-	if (cast->ctx->ext_image_copy_capture_manager
-			&& cast->ctx->ext_output_image_capture_source_manager) {
+	if (use_ext_image_copy_capture(cast)) {
 		return xdpw_ext_ic_session_init(cast);
-	} else if (cast->ctx->screencopy_manager) {
+	} else if (cast->target->type == MONITOR && cast->ctx->screencopy_manager) {
 		return xdpw_wlr_sc_session_init(cast);
 	}
 	return -1;
@@ -441,6 +460,387 @@ static const struct ext_foreign_toplevel_list_v1_listener foreign_toplevel_list_
 	.finished = foreign_toplevel_list_handle_finished,
 };
 
+static void vwl_destroy_vout(struct xdpw_vout *vout) {
+	wl_list_remove(&vout->link);
+	free(vout->name);
+	free(vout->output_name);
+	free(vout);
+}
+
+static void vwl_clear_vouts(struct xdpw_screencast_context *ctx) {
+	struct xdpw_vout *vout, *tmp;
+
+	wl_list_for_each_safe(vout, tmp, &ctx->vouts, link) {
+		vwl_destroy_vout(vout);
+	}
+}
+
+static const char *skip_json_ws(const char *s) {
+	while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') {
+		++s;
+	}
+	return s;
+}
+
+static const char *skip_json_string(const char *s) {
+	if (*s != '"') {
+		return NULL;
+	}
+	++s;
+	while (*s) {
+		if (*s == '\\') {
+			if (!s[1]) {
+				return NULL;
+			}
+			s += 2;
+			continue;
+		}
+		if (*s == '"') {
+			return s + 1;
+		}
+		++s;
+	}
+	return NULL;
+}
+
+static const char *find_matching_json(const char *s, char open_ch, char close_ch) {
+	int depth = 0;
+
+	for (; *s; ++s) {
+		if (*s == '"') {
+			s = skip_json_string(s);
+			if (s == NULL) {
+				return NULL;
+			}
+			--s;
+			continue;
+		}
+		if (*s == open_ch) {
+			++depth;
+		} else if (*s == close_ch) {
+			--depth;
+			if (depth == 0) {
+				return s;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+static const char *find_json_field(const char *obj, const char *key) {
+	char pattern[128];
+	const char *p;
+	size_t key_len;
+
+	key_len = strlen(key);
+	if (key_len + 3 >= sizeof(pattern)) {
+		return NULL;
+	}
+
+	pattern[0] = '"';
+	memcpy(pattern + 1, key, key_len);
+	pattern[key_len + 1] = '"';
+	pattern[key_len + 2] = '\0';
+
+	p = obj;
+	while ((p = strstr(p, pattern)) != NULL) {
+		const char *after = p + key_len + 2;
+		after = skip_json_ws(after);
+		if (*after != ':') {
+			p = after;
+			continue;
+		}
+		return skip_json_ws(after + 1);
+	}
+
+	return NULL;
+}
+
+static char *dup_json_string_value(const char *value) {
+	const char *end;
+	const char *p;
+	char *out;
+	size_t len = 0;
+
+	if (value == NULL || *value != '"') {
+		return NULL;
+	}
+
+	end = skip_json_string(value);
+	if (end == NULL) {
+		return NULL;
+	}
+
+	for (p = value + 1; p < end - 1; ++p) {
+		if (*p == '\\' && p + 1 < end - 1) {
+			++p;
+		}
+		++len;
+	}
+
+	out = calloc(len + 1, 1);
+	if (out == NULL) {
+		return NULL;
+	}
+
+	len = 0;
+	for (p = value + 1; p < end - 1; ++p) {
+		if (*p == '\\' && p + 1 < end - 1) {
+			++p;
+		}
+		out[len++] = *p;
+	}
+
+	return out;
+}
+
+static bool parse_json_uint_field(const char *obj, const char *key, uint32_t *value) {
+	const char *field = find_json_field(obj, key);
+	char *end = NULL;
+	unsigned long parsed;
+
+	if (field == NULL) {
+		return false;
+	}
+
+	parsed = strtoul(field, &end, 10);
+	if (end == field) {
+		return false;
+	}
+
+	*value = (uint32_t)parsed;
+	return true;
+}
+
+static bool parse_json_int_field(const char *obj, const char *key, int *value) {
+	const char *field = find_json_field(obj, key);
+	char *end = NULL;
+	long parsed;
+
+	if (field == NULL) {
+		return false;
+	}
+
+	parsed = strtol(field, &end, 10);
+	if (end == field) {
+		return false;
+	}
+
+	*value = (int)parsed;
+	return true;
+}
+
+static char *parse_json_string_field(const char *obj, const char *key) {
+	return dup_json_string_value(find_json_field(obj, key));
+}
+
+static char *parse_vout_output_name(const char *obj) {
+	const char *outputs = find_json_field(obj, "outputs");
+	const char *first;
+
+	if (outputs == NULL || *outputs != '[') {
+		return NULL;
+	}
+
+	first = skip_json_ws(outputs + 1);
+	return dup_json_string_value(first);
+}
+
+static bool parse_vout_geometry(const char *obj, int *x, int *y, int *width, int *height) {
+	const char *regions = find_json_field(obj, "regions");
+	const char *region_obj;
+	const char *geometry;
+	uint32_t uw, uh;
+
+	if (regions == NULL || *regions != '[') {
+		return false;
+	}
+
+	region_obj = skip_json_ws(regions + 1);
+	if (*region_obj != '{') {
+		return false;
+	}
+
+	geometry = find_json_field(region_obj, "geometry");
+	if (geometry == NULL || *geometry != '{') {
+		return false;
+	}
+
+	if (!parse_json_int_field(geometry, "x", x) ||
+			!parse_json_int_field(geometry, "y", y) ||
+			!parse_json_uint_field(geometry, "width", &uw) ||
+			!parse_json_uint_field(geometry, "height", &uh)) {
+		return false;
+	}
+
+	*width = (int)uw;
+	*height = (int)uh;
+	return true;
+}
+
+static char *vwl_query_state(void) {
+	static const char request[] = "{\"id\":1,\"type\":\"get_state\"}\n";
+	char default_socket[PATH_MAX];
+	const char *runtime_dir;
+	const char *socket_path;
+	struct sockaddr_un addr = {0};
+	char *buffer = NULL;
+	size_t size = 0;
+	size_t used = 0;
+	ssize_t nread;
+	int fd = -1;
+
+	socket_path = getenv("VWL_SOCKET");
+	if (socket_path == NULL || socket_path[0] == '\0') {
+		runtime_dir = getenv("XDG_RUNTIME_DIR");
+		if (runtime_dir == NULL || runtime_dir[0] == '\0') {
+			return NULL;
+		}
+		if (snprintf(default_socket, sizeof(default_socket), "%s/vwl.sock", runtime_dir) >= (int)sizeof(default_socket)) {
+			return NULL;
+		}
+		socket_path = default_socket;
+	}
+
+	fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0) {
+		return NULL;
+	}
+
+	addr.sun_family = AF_UNIX;
+	if (strlen(socket_path) >= sizeof(addr.sun_path)) {
+		close(fd);
+		return NULL;
+	}
+	memcpy(addr.sun_path, socket_path, strlen(socket_path) + 1);
+
+	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		close(fd);
+		return NULL;
+	}
+
+	if (write(fd, request, sizeof(request) - 1) < 0) {
+		close(fd);
+		return NULL;
+	}
+
+	size = 4096;
+	buffer = calloc(size, 1);
+	if (buffer == NULL) {
+		close(fd);
+		return NULL;
+	}
+
+	while ((nread = read(fd, buffer + used, size - used - 1)) > 0) {
+		char *newline;
+
+		used += (size_t)nread;
+		buffer[used] = '\0';
+		newline = strchr(buffer, '\n');
+		if (newline != NULL) {
+			*newline = '\0';
+			close(fd);
+			return buffer;
+		}
+
+		if (used + 1 < size) {
+			continue;
+		}
+
+		size *= 2;
+		buffer = realloc(buffer, size);
+		if (buffer == NULL) {
+			close(fd);
+			return NULL;
+		}
+	}
+
+	close(fd);
+	if (nread < 0) {
+		free(buffer);
+		return NULL;
+	}
+
+	return buffer;
+}
+
+void xdpw_vwl_refresh_vouts(struct xdpw_screencast_context *ctx) {
+	char *json;
+	const char *list;
+	const char *list_end;
+	const char *entry;
+
+	vwl_clear_vouts(ctx);
+
+	json = vwl_query_state();
+	if (json == NULL) {
+		return;
+	}
+
+	list = find_json_field(json, "virtual_outputs");
+	if (list == NULL || *list != '[') {
+		free(json);
+		return;
+	}
+	list_end = find_matching_json(list, '[', ']');
+	if (list_end == NULL) {
+		free(json);
+		return;
+	}
+
+	entry = skip_json_ws(list + 1);
+	while (entry && entry < list_end && *entry != ']') {
+		const char *entry_end;
+		struct xdpw_vout *vout;
+
+		if (*entry != '{') {
+			break;
+		}
+
+		entry_end = find_matching_json(entry, '{', '}');
+		if (entry_end == NULL || entry_end > list_end) {
+			break;
+		}
+
+		vout = calloc(1, sizeof(*vout));
+		if (vout == NULL) {
+			break;
+		}
+		wl_list_init(&vout->link);
+
+		if (!parse_json_uint_field(entry, "id", &vout->id)) {
+			free(vout);
+			break;
+		}
+		vout->name = parse_json_string_field(entry, "name");
+		vout->output_name = parse_vout_output_name(entry);
+		if (vout->name == NULL) {
+			free(vout->output_name);
+			free(vout);
+			break;
+		}
+		if (!parse_vout_geometry(entry, &vout->x, &vout->y, &vout->width, &vout->height)) {
+			vout->x = vout->y = 0;
+			vout->width = vout->height = 0;
+		}
+		if (vout->output_name != NULL) {
+			struct xdpw_wlr_output *output = xdpw_wlr_output_find_by_name(&ctx->output_list, vout->output_name);
+			if (output != NULL) {
+				vout->framerate = output->framerate;
+			}
+		}
+
+		wl_list_insert(&ctx->vouts, &vout->link);
+		entry = skip_json_ws(entry_end + 1);
+		if (*entry == ',') {
+			entry = skip_json_ws(entry + 1);
+		}
+	}
+
+	free(json);
+}
+
 static void wlr_registry_handle_add(void *data, struct wl_registry *reg,
 		uint32_t id, const char *interface, uint32_t ver) {
 	struct xdpw_screencast_context *ctx = data;
@@ -501,6 +901,12 @@ static void wlr_registry_handle_add(void *data, struct wl_registry *reg,
 				&foreign_toplevel_list_listener, ctx);
 	}
 
+	if (!strcmp(interface, vwl_vout_image_capture_source_manager_v1_interface.name)) {
+		logprint(DEBUG, "wlroots: |-- registered to interface %s (Version %u)", interface, ver);
+		ctx->vwl_vout_image_capture_source_manager = wl_registry_bind(
+				reg, id, &vwl_vout_image_capture_source_manager_v1_interface, 1);
+	}
+
 	if (strcmp(interface, wl_shm_interface.name) == 0) {
 		logprint(DEBUG, "wlroots: |-- registered to interface %s (Version %u)", interface, WL_SHM_VERSION);
 		ctx->shm = wl_registry_bind(reg, id, &wl_shm_interface, WL_SHM_VERSION);
@@ -558,6 +964,7 @@ int xdpw_wlr_screencopy_init(struct xdpw_state *state) {
 	wl_list_init(&ctx->output_list);
 	wl_list_init(&ctx->screencast_instances);
 	wl_list_init(&ctx->toplevels);
+	wl_list_init(&ctx->vouts);
 	wl_array_init(&ctx->format_modifier_pairs);
 
 	// retrieve registry
@@ -594,7 +1001,8 @@ int xdpw_wlr_screencopy_init(struct xdpw_state *state) {
 		return -1;
 	}
 
-	if (ctx->ext_image_copy_capture_manager && ctx->ext_foreign_toplevel_image_capture_source_manager) {
+	if (ctx->ext_image_copy_capture_manager &&
+			(ctx->ext_foreign_toplevel_image_capture_source_manager || ctx->vwl_vout_image_capture_source_manager)) {
 		state->screencast_source_types |= WINDOW;
 	}
 
@@ -617,6 +1025,8 @@ int xdpw_wlr_screencopy_init(struct xdpw_state *state) {
 		logprint(DEBUG, "wayland: xdg_output listeners run");
 	}
 
+	xdpw_vwl_refresh_vouts(ctx);
+
 	return 0;
 }
 
@@ -637,6 +1047,8 @@ void xdpw_wlr_screencopy_finish(struct xdpw_screencast_context *ctx) {
 		foreign_toplevel_destroy(toplevel);
 	}
 
+	vwl_clear_vouts(ctx);
+
 	struct xdpw_screencast_instance *cast, *tmp_c;
 	wl_list_for_each_safe(cast, tmp_c, &ctx->screencast_instances, link) {
 		xdpw_screencast_instance_destroy(cast);
@@ -653,6 +1065,9 @@ void xdpw_wlr_screencopy_finish(struct xdpw_screencast_context *ctx) {
 	}
 	if (ctx->ext_foreign_toplevel_image_capture_source_manager) {
 		ext_foreign_toplevel_image_capture_source_manager_v1_destroy(ctx->ext_foreign_toplevel_image_capture_source_manager);
+	}
+	if (ctx->vwl_vout_image_capture_source_manager) {
+		vwl_vout_image_capture_source_manager_v1_destroy(ctx->vwl_vout_image_capture_source_manager);
 	}
 	if (ctx->shm) {
 		wl_shm_destroy(ctx->shm);
