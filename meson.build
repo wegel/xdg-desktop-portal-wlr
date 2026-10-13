@@ -151,7 +151,7 @@ summary({
 capture_lifecycle_test = executable('capture-lifecycle-test',
 	['tests/capture-lifecycle.c', 'src/core/timer.c', 'src/core/timespec_util.c',
 	 'src/screencast/screencast_common.c', wl_proto_files],
-	dependencies: [wayland_client, sdbus, pipewire, gbm, drm, epoll],
+	dependencies: [wayland_client, sdbus, pipewire, rt, gbm, drm, epoll],
 	include_directories: inc,
 	c_args: ['-UNDEBUG', '-ffunction-sections', '-fdata-sections'],
 	link_args: ['-Wl,--gc-sections'],
