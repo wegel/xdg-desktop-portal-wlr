@@ -360,13 +360,14 @@ static void pwr_handle_stream_state_changed(void *data,
 	case PW_STREAM_STATE_STREAMING:
 		cast->pwr_stream_state = true;
 		break;
-	case PW_STREAM_STATE_PAUSED:
-		if (old == PW_STREAM_STATE_STREAMING) {
-			xdpw_pwr_enqueue_buffer(cast);
-		}
-		// fall through
 	default:
 		cast->pwr_stream_state = false;
+		// A capture must stop using its buffer before PipeWire can reuse it.
+		xdpw_wlr_frame_capture_cancel(cast);
+		if (state == PW_STREAM_STATE_PAUSED && old == PW_STREAM_STATE_STREAMING
+				&& cast->current_frame.pw_buffer) {
+			xdpw_pwr_enqueue_buffer(cast);
+		}
 		break;
 	}
 }
@@ -571,14 +572,15 @@ static void pwr_handle_stream_remove_buffer(void *data, struct pw_buffer *buffer
 
 	logprint(DEBUG, "pipewire: remove buffer event handle");
 
+	if (cast->current_frame.pw_buffer == buffer) {
+		xdpw_wlr_frame_capture_cancel(cast);
+		cast->current_frame.pw_buffer = NULL;
+		cast->current_frame.xdpw_buffer = NULL;
+	}
 	struct xdpw_buffer *xdpw_buffer = buffer->user_data;
 	if (xdpw_buffer) {
 		wl_list_remove(&xdpw_buffer->link);
 		xdpw_buffer_destroy(xdpw_buffer);
-	}
-	if (cast->current_frame.pw_buffer == buffer) {
-		cast->current_frame.pw_buffer = NULL;
-		cast->current_frame.xdpw_buffer = NULL;
 	}
 	for (uint32_t plane = 0; plane < buffer->buffer->n_datas; plane++) {
 		buffer->buffer->datas[plane].fd = -1;

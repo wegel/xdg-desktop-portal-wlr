@@ -146,6 +146,22 @@ summary({
 	'Man pages': scdoc.found(),
 }, bool_yn: true)
 
+# Compile the callbacks into the test so they can remain private to the backend.
+# Drop unused daemon entry points and their dependencies from this small driver.
+capture_lifecycle_test = executable('capture-lifecycle-test',
+	['tests/capture-lifecycle.c', 'src/core/timer.c', 'src/core/timespec_util.c',
+	 'src/screencast/screencast_common.c', wl_proto_files],
+	dependencies: [wayland_client, sdbus, pipewire, gbm, drm, epoll],
+	include_directories: inc,
+	c_args: ['-UNDEBUG', '-ffunction-sections', '-fdata-sections'],
+	link_args: ['-Wl,--gc-sections'],
+)
+foreach backend : ['ext', 'ext-window', 'ext-vout', 'wlr']
+	foreach scenario : ['pause-timer', 'pause-active', 'remove-timer', 'remove-active', 'error', 'close']
+		test('capture-' + backend + '-' + scenario, capture_lifecycle_test, args: [scenario, backend])
+	endforeach
+endforeach
+
 wayland_dispatch_test = executable('wayland-dispatch-test',
 	['tests/wayland-dispatch.c', 'src/core/wayland_dispatch.c'],
 	dependencies: wayland_client,
