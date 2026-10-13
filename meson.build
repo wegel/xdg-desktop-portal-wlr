@@ -49,6 +49,7 @@ subdir('protocols')
 
 xdpw_files = files(
 	'src/core/main.c',
+	'src/core/wayland_dispatch.c',
 	'src/core/logger.c',
 	'src/core/config.c',
 	'src/core/request.c',
@@ -144,3 +145,11 @@ summary({
 	'systemd service': systemd.found(),
 	'Man pages': scdoc.found(),
 }, bool_yn: true)
+
+wayland_dispatch_test = executable('wayland-dispatch-test',
+	['tests/wayland-dispatch.c', 'src/core/wayland_dispatch.c'],
+	dependencies: wayland_client,
+	include_directories: inc,
+	c_args: '-UNDEBUG',
+)
+test('wayland-dispatch-deleted-object', wayland_dispatch_test, timeout: 5)
