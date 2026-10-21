@@ -8,6 +8,7 @@ static struct xdpw_state state;
 static struct xdpw_screencast_context ctx;
 static struct xdpw_screencast_instance cast;
 static struct xdpw_buffer buffer;
+static struct xdpw_screencast_target target;
 static struct spa_meta_header header;
 static struct spa_meta meta = { .type = SPA_META_Header, .size = sizeof(header), .data = &header };
 static struct spa_chunk chunk;
@@ -104,9 +105,19 @@ int main(int argc, char **argv) {
 	state.timer_poll_fd = -1;
 	wl_list_init(&state.timers);
 	ctx.state = &state;
-	if (strcmp(argv[2], "ext") == 0) {
+	cast.target = &target;
+	target.type = MONITOR;
+	if (strcmp(argv[2], "wlr") != 0) {
 		ctx.ext_image_copy_capture_manager = (void *)&ctx;
-		ctx.ext_output_image_capture_source_manager = (void *)&ctx;
+		if (strcmp(argv[2], "ext-window") == 0) {
+			target.type = WINDOW;
+			ctx.ext_foreign_toplevel_image_capture_source_manager = (void *)&ctx;
+		} else if (strcmp(argv[2], "ext-vout") == 0) {
+			target.type = VOUT;
+			ctx.vwl_vout_image_capture_source_manager = (void *)&ctx;
+		} else {
+			ctx.ext_output_image_capture_source_manager = (void *)&ctx;
+		}
 	} else {
 		ctx.screencopy_manager = (void *)&ctx;
 	}

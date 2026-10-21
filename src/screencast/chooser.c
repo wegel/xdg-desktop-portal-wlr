@@ -127,6 +127,35 @@ static char *get_toplevel_label(struct xdpw_toplevel *toplevel, enum xdpw_choose
 	}
 }
 
+static char *get_vout_label(struct xdpw_vout *vout, enum xdpw_chooser_types chooser_type) {
+	if (chooser_type == XDPW_CHOOSER_DMENU && vout->output_name) {
+		return format_str("Virtual output: %s (%s)", vout->name, vout->output_name);
+	}
+	return format_str("Virtual output: %s", vout->name);
+}
+
+static struct xdpw_vout *clone_vout(struct xdpw_vout *vout) {
+	struct xdpw_vout *clone = calloc(1, sizeof(*clone));
+
+	if (clone == NULL) {
+		return NULL;
+	}
+
+	*clone = *vout;
+	clone->name = vout->name ? strdup(vout->name) : NULL;
+	clone->output_name = vout->output_name ? strdup(vout->output_name) : NULL;
+	wl_list_init(&clone->link);
+
+	if ((vout->name && clone->name == NULL) || (vout->output_name && clone->output_name == NULL)) {
+		free(clone->name);
+		free(clone->output_name);
+		free(clone);
+		return NULL;
+	}
+
+	return clone;
+}
+
 static bool wlr_chooser(const struct xdpw_chooser *chooser,
 		struct xdpw_screencast_context *ctx, struct xdpw_screencast_target *target,
 		uint32_t type_mask) {
@@ -153,6 +182,13 @@ static bool wlr_chooser(const struct xdpw_chooser *chooser,
 			struct xdpw_toplevel *toplevel;
 			wl_list_for_each(toplevel, &ctx->toplevels, link) {
 				char *label = get_toplevel_label(toplevel, chooser->type);
+				fprintf(chooser_in, "%s\n", label);
+				free(label);
+			}
+
+			struct xdpw_vout *vout;
+			wl_list_for_each(vout, &ctx->vouts, link) {
+				char *label = get_vout_label(vout, chooser->type);
 				fprintf(chooser_in, "%s\n", label);
 				free(label);
 			}
@@ -208,6 +244,22 @@ static bool wlr_chooser(const struct xdpw_chooser *chooser,
 		}
 	}
 
+	struct xdpw_vout *vout;
+	wl_list_for_each(vout, &ctx->vouts, link) {
+		if (found) {
+			break;
+		}
+		char *label = get_vout_label(vout, chooser->type);
+		found = strcmp(selected_label, label) == 0;
+		free(label);
+		if (found) {
+			target->type = VOUT;
+			target->vout = clone_vout(vout);
+			found = target->vout != NULL;
+			break;
+		}
+	}
+
 	if (!found) {
 		logprint(ERROR, "wlroots: chooser %s selected unknown target: %s", chooser->cmd, selected_label);
 	}
@@ -243,7 +295,7 @@ static bool wlr_chooser_default(struct xdpw_screencast_context *ctx, struct xdpw
 					default_chooser[i].cmd);
 			continue;
 		}
-		return target->output || target->toplevel;
+		return target->output || target->toplevel || target->vout;
 	}
 	return false;
 }
@@ -276,7 +328,7 @@ bool xdpw_wlr_target_chooser(struct xdpw_screencast_context *ctx, struct xdpw_sc
 			logprint(ERROR, "wlroots: chooser %s failed", chooser.cmd);
 			goto end;
 		}
-		return target->output || target->toplevel;
+		return target->output || target->toplevel || target->vout;
 	}
 end:
 	return false;

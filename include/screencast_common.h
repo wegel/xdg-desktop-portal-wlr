@@ -27,6 +27,7 @@ enum cursor_modes {
 enum source_types {
   MONITOR = 1,
   WINDOW = 2,
+  VOUT = 4,
 };
 
 enum persist_modes {
@@ -106,6 +107,18 @@ struct xdpw_toplevel {
 	char *identifier;
 };
 
+struct xdpw_vout {
+	struct wl_list link;
+	uint32_t id;
+	char *name;
+	char *output_name;
+	int x;
+	int y;
+	int width;
+	int height;
+	float framerate;
+};
+
 struct xdpw_screencast_context {
 	// xdpw
 	struct xdpw_state *state;
@@ -121,6 +134,7 @@ struct xdpw_screencast_context {
 	struct ext_output_image_capture_source_manager_v1 *ext_output_image_capture_source_manager;
 	struct ext_foreign_toplevel_image_capture_source_manager_v1 *ext_foreign_toplevel_image_capture_source_manager;
 	struct ext_image_copy_capture_manager_v1 *ext_image_copy_capture_manager;
+	struct vwl_vout_image_capture_source_manager_v1 *vwl_vout_image_capture_source_manager;
 	struct ext_foreign_toplevel_list_v1 *ext_foreign_toplevel_list;
 	struct wl_shm *shm;
 	struct zwp_linux_dmabuf_v1 *linux_dmabuf;
@@ -137,6 +151,9 @@ struct xdpw_screencast_context {
 
 	// toplevels
 	struct wl_list toplevels;
+
+	// vouts
+	struct wl_list vouts;
 };
 
 struct xdpw_screencast_target {
@@ -148,6 +165,9 @@ struct xdpw_screencast_target {
 
 	// only for WINDOW
 	struct xdpw_toplevel *toplevel;
+
+	// only for VOUT
+	struct xdpw_vout *vout;
 };
 
 struct xdpw_screencast_restore_data {
@@ -268,6 +288,8 @@ int xdpw_bpp_from_drm_fourcc(uint32_t format);
 
 enum xdpw_chooser_types get_chooser_type(const char *chooser_type);
 const char *chooser_type_str(enum xdpw_chooser_types chooser_type);
+
+void xdpw_vwl_refresh_vouts(struct xdpw_screencast_context *ctx);
 
 struct xdpw_frame_damage merge_damage(struct xdpw_frame_damage *damage1, struct xdpw_frame_damage *damage2);
 #endif /* SCREENCAST_COMMON_H */

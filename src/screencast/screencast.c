@@ -18,6 +18,15 @@
 static const char object_path[] = "/org/freedesktop/portal/desktop";
 static const char interface_name[] = "org.freedesktop.impl.portal.ScreenCast";
 
+static void free_vout_target(struct xdpw_vout *vout) {
+	if (vout == NULL) {
+		return;
+	}
+	free(vout->name);
+	free(vout->output_name);
+	free(vout);
+}
+
 void exec_with_shell(char *command) {
 	pid_t pid1 = fork();
 	if (pid1 < 0) {
@@ -64,6 +73,8 @@ void xdpw_screencast_instance_init(struct xdpw_screencast_context *ctx,
 	uint32_t output_framerate = 0;
 	if (target->type == MONITOR) {
 		output_framerate = target->output->framerate;
+	} else if (target->type == VOUT) {
+		output_framerate = target->vout->framerate;
 	}
 
 	cast->ctx = ctx;
@@ -113,6 +124,9 @@ void xdpw_screencast_instance_destroy(struct xdpw_screencast_instance *cast) {
 
 	wl_list_remove(&cast->link);
 	xdpw_pwr_stream_destroy(cast);
+	if (cast->target && cast->target->type == VOUT) {
+		free_vout_target(cast->target->vout);
+	}
 	free(cast->target);
 	assert(wl_list_length(&cast->buffer_list) == 0);
 	wl_array_release(&cast->current_frame.damage);
@@ -143,6 +157,12 @@ bool setup_target(struct xdpw_screencast_context *ctx, struct xdpw_session *sess
 		wl_list_for_each(toplevel, &ctx->toplevels, link) {
 			logprint(INFO, "wlroots: capturable toplevel: %s app_id: %s title: %s",
 				toplevel->identifier, toplevel->app_id, toplevel->title);
+		}
+		xdpw_vwl_refresh_vouts(ctx);
+		struct xdpw_vout *vout;
+		wl_list_for_each(vout, &ctx->vouts, link) {
+			logprint(INFO, "wlroots: capturable virtual output: %u %s (%s)",
+				vout->id, vout->name, vout->output_name ? vout->output_name : "?");
 		}
 	}
 
@@ -176,10 +196,13 @@ bool setup_target(struct xdpw_screencast_context *ctx, struct xdpw_session *sess
 	}
 	if (!target_initialized) {
 		logprint(ERROR, "wlroots: no output found");
+		if (target->type == VOUT) {
+			free_vout_target(target->vout);
+		}
 		free(target);
 		return false;
 	}
-	assert(target->output || target->toplevel);
+	assert(target->output || target->toplevel || target->vout);
 
 	// Disable screencast sharing to avoid sharing between dmabuf and shm capable clients
 	/*
@@ -216,6 +239,9 @@ bool setup_target(struct xdpw_screencast_context *ctx, struct xdpw_session *sess
 		break;
 	case WINDOW:
 		logprint(INFO, "wlroots: toplevel: %s", sess->screencast_data.screencast_instance->target->toplevel->title);
+		break;
+	case VOUT:
+		logprint(INFO, "wlroots: virtual output: %s", sess->screencast_data.screencast_instance->target->vout->name);
 		break;
 	}
 
@@ -651,8 +677,20 @@ static int method_screencast_start(sd_bus_message *msg, void *data,
 		if (ret < 0) {
 			return ret;
 		}
+	} else if (cast->target->type == VOUT) {
+		ret = sd_bus_message_append(reply, "{sv}",
+			"position", "(ii)", cast->target->vout->x, cast->target->vout->y);
+		if (ret < 0) {
+			return ret;
+		}
+		ret = sd_bus_message_append(reply, "{sv}",
+			"size", "(ii)", cast->target->vout->width, cast->target->vout->height);
+		if (ret < 0) {
+			return ret;
+		}
 	}
-	ret = sd_bus_message_append(reply, "{sv}", "source_type", "u", cast->target->type);
+	ret = sd_bus_message_append(reply, "{sv}", "source_type", "u",
+		cast->target->type == VOUT ? WINDOW : cast->target->type);
 	if (ret < 0) {
 		return ret;
 	}

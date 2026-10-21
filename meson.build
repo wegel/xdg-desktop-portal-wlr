@@ -156,7 +156,7 @@ capture_lifecycle_test = executable('capture-lifecycle-test',
 	c_args: ['-UNDEBUG', '-ffunction-sections', '-fdata-sections'],
 	link_args: ['-Wl,--gc-sections'],
 )
-foreach backend : ['ext', 'wlr']
+foreach backend : ['ext', 'ext-window', 'ext-vout', 'wlr']
 	foreach scenario : ['pause-timer', 'pause-active', 'pause-remove-timer', 'pause-remove-active', 'pause-close', 'remove-timer', 'remove-active', 'error', 'close', 'starved', 'starved-close']
 		test('capture-' + backend + '-' + scenario, capture_lifecycle_test, args: [scenario, backend])
 	endforeach

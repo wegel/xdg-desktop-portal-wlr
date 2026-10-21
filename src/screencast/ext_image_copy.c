@@ -3,6 +3,7 @@
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
+#include "vwl-vout-image-capture-source-unstable-v1-client-protocol.h"
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -274,6 +275,15 @@ static int ext_register_session_cb(struct xdpw_screencast_instance *cast) {
 		source = ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
 			cast->ctx->ext_foreign_toplevel_image_capture_source_manager,
 			cast->target->toplevel->handle);
+		break;
+	case VOUT:
+		if (cast->ctx->vwl_vout_image_capture_source_manager == NULL) {
+			logprint(INFO, "ext: screencast virtual output: unsupported");
+			return -1;
+		}
+		source = vwl_vout_image_capture_source_manager_v1_create_source(
+			cast->ctx->vwl_vout_image_capture_source_manager,
+			cast->target->vout->id);
 		break;
 	}
 	assert(source != NULL);
