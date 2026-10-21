@@ -359,15 +359,16 @@ static void pwr_handle_stream_state_changed(void *data,
 	switch (state) {
 	case PW_STREAM_STATE_STREAMING:
 		cast->pwr_stream_state = true;
+		if (cast->current_frame.pw_buffer) {
+			// Resume the capture cancelled on pause, unless PipeWire removed its buffer.
+			xdpw_wlr_frame_capture(cast);
+		}
 		break;
 	default:
 		cast->pwr_stream_state = false;
-		// A capture must stop using its buffer before PipeWire can reuse it.
+		// Keep the buffer for resume. Queuing an unfinished first frame would send
+		// a zero timestamp and stall consumers when real timestamps follow.
 		xdpw_wlr_frame_capture_cancel(cast);
-		if (state == PW_STREAM_STATE_PAUSED && old == PW_STREAM_STATE_STREAMING
-				&& cast->current_frame.pw_buffer) {
-			xdpw_pwr_enqueue_buffer(cast);
-		}
 		break;
 	}
 }

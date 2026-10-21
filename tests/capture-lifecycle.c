@@ -9,12 +9,16 @@ static struct xdpw_screencast_context ctx;
 static struct xdpw_screencast_instance cast;
 static struct xdpw_buffer buffer;
 static struct xdpw_screencast_target target;
-static struct spa_buffer spa_buffer;
+static struct spa_meta_header header;
+static struct spa_meta meta = { .type = SPA_META_Header, .size = sizeof(header), .data = &header };
+static struct spa_chunk chunk;
+static struct spa_data data = { .chunk = &chunk };
+static struct spa_buffer spa_buffer = { .n_metas = 1, .metas = &meta, .n_datas = 1, .datas = &data };
 static struct pw_buffer pw_buffer;
 static bool available = true;
 static bool active;
 static bool delayed = true;
-static unsigned captures, queued, destroyed;
+static unsigned captures, queued, destroyed, dequeued;
 static char fake_frame;
 
 void logprint(enum LOGLEVEL level, char *msg, ...) {}
@@ -25,12 +29,18 @@ uint64_t fps_limit_measure_end(struct fps_limit_state *fps, double rate) {
 uint32_t pw_stream_get_node_id(struct pw_stream *stream) { return 1; }
 const struct pw_properties *pw_stream_get_properties(struct pw_stream *stream) { return NULL; }
 struct pw_buffer *pw_stream_dequeue_buffer(struct pw_stream *stream) {
-	return available ? &pw_buffer : NULL;
+	if (!available) {
+		return NULL;
+	}
+	available = false;
+	dequeued++;
+	return &pw_buffer;
 }
 int pw_stream_queue_buffer(struct pw_stream *stream, struct pw_buffer *buf) {
 	assert(buf == &pw_buffer);
 	assert(!active);
 	assert(wl_list_empty(&state.timers));
+	available = true;
 	queued++;
 	return 0;
 }
@@ -128,14 +138,50 @@ int main(int argc, char **argv) {
 			assert(active);
 		}
 		if (strncmp(argv[1], "pause", 5) == 0) {
-			change_state(PW_STREAM_STATE_STREAMING, PW_STREAM_STATE_PAUSED);
-			assert(!active);
-			assert(wl_list_empty(&state.timers));
-			assert(queued == 1);
-			change_state(PW_STREAM_STATE_PAUSED, PW_STREAM_STATE_STREAMING);
-			unsigned before = captures;
-			dispatch_timers();
-			assert(captures == before + 1);
+			// Pause before the first completed frame, including repeated pauses.
+			for (unsigned i = 0; i < 3; i++) {
+				change_state(PW_STREAM_STATE_STREAMING, PW_STREAM_STATE_PAUSED);
+				assert(!active);
+				assert(wl_list_empty(&state.timers));
+				assert(queued == 0);
+				assert(cast.current_frame.pw_buffer == &pw_buffer);
+				assert(cast.current_frame.xdpw_buffer == &buffer);
+				assert(dequeued == 1);
+				if (strstr(argv[1], "remove")) {
+					// PipeWire can replace the held buffer during a resize.
+					pwr_handle_stream_remove_buffer(&cast, &pw_buffer);
+					assert(cast.current_frame.pw_buffer == NULL);
+					assert(cast.current_frame.xdpw_buffer == NULL);
+					assert(destroyed == 1 && queued == 0);
+					wl_list_init(&buffer.link);
+					pw_buffer.user_data = &buffer;
+					available = true;
+				} else if (strstr(argv[1], "close")) {
+					xdpw_pwr_stream_destroy(&cast);
+					assert(queued == 0 && wl_list_empty(&state.timers));
+					return 0;
+				}
+				change_state(PW_STREAM_STATE_PAUSED, PW_STREAM_STATE_STREAMING);
+				unsigned before = captures;
+				// A process callback must not start a second capture into the held buffer.
+				pwr_handle_stream_on_process(&cast);
+				dispatch_timers();
+				assert(captures == before + 1);
+				if (strstr(argv[1], "remove")) {
+					assert(dequeued == 2);
+					break;
+				}
+			}
+			// Simulate a successful frame after resume. Only it may reach the consumer.
+			xdpw_wlr_frame_capture_cancel(&cast);
+			cast.current_frame.tv_sec = 42;
+			cast.current_frame.tv_nsec = 123000000;
+			cast.current_frame.completed = true;
+			xdpw_pwr_enqueue_buffer(&cast);
+			assert(queued == 1 && header.pts == 42123000000LL);
+			assert(!(header.flags & SPA_META_HEADER_FLAG_CORRUPTED));
+			assert(!(chunk.flags & SPA_CHUNK_FLAG_CORRUPTED));
+			assert(cast.current_frame.pw_buffer == NULL);
 		} else if (strncmp(argv[1], "remove", 6) == 0) {
 			pwr_handle_stream_remove_buffer(&cast, &pw_buffer);
 			assert(!active);
