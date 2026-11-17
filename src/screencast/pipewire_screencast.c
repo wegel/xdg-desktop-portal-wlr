@@ -331,6 +331,7 @@ void xdpw_pwr_enqueue_buffer(struct xdpw_screencast_instance *cast) {
 done:
 	cast->current_frame.xdpw_buffer = NULL;
 	cast->current_frame.pw_buffer = NULL;
+	xdpw_wlr_frame_cancel(cast);
 }
 
 void pwr_update_stream_param(struct xdpw_screencast_instance *cast) {
@@ -375,8 +376,6 @@ static void pwr_disarm_process_retry(struct xdpw_screencast_instance *cast) {
 	cast->process_retry = NULL;
 }
 
-static void pwr_handle_stream_on_process(void *data);
-
 static void pwr_handle_stream_state_changed(void *data,
 		enum pw_stream_state old, enum pw_stream_state state, const char *error) {
 	struct xdpw_screencast_instance *cast = data;
@@ -395,7 +394,7 @@ static void pwr_handle_stream_state_changed(void *data,
 			// Resume the capture cancelled on pause, unless PipeWire removed its buffer.
 			xdpw_wlr_frame_capture(cast);
 		} else {
-			pwr_handle_stream_on_process(cast);
+			pw_stream_trigger_process(cast->stream);
 		}
 		break;
 	default:
@@ -403,7 +402,7 @@ static void pwr_handle_stream_state_changed(void *data,
 		pwr_disarm_process_retry(cast);
 		// Keep the buffer for resume. Queuing an unfinished first frame would send
 		// a zero timestamp and stall consumers when real timestamps follow.
-		xdpw_wlr_frame_capture_cancel(cast);
+		xdpw_wlr_frame_cancel(cast);
 		break;
 	}
 }
@@ -610,7 +609,7 @@ static void pwr_handle_stream_remove_buffer(void *data, struct pw_buffer *buffer
 
 	if (cast->current_frame.pw_buffer == buffer) {
 		logprint(DEBUG, "pipewire: current buffer has been removed");
-		xdpw_wlr_frame_capture_cancel(cast);
+		xdpw_wlr_frame_cancel(cast);
 		cast->current_frame.pw_buffer = NULL;
 		cast->current_frame.xdpw_buffer = NULL;
 	}

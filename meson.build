@@ -1,7 +1,7 @@
 project(
 	'xdg-desktop-portal-wlr',
 	'c',
-	version: '0.9.0-dev',
+	version: '0.9.0',
 	license: 'MIT',
 	meson_version: '>=0.60.0',
 	default_options: ['c_std=c11', 'warning_level=2', 'werror=true'],
@@ -157,7 +157,7 @@ capture_lifecycle_test = executable('capture-lifecycle-test',
 	link_args: ['-Wl,--gc-sections'],
 )
 foreach backend : ['ext', 'ext-window', 'ext-vout', 'wlr']
-	foreach scenario : ['pause-timer', 'pause-active', 'pause-remove-timer', 'pause-remove-active', 'pause-close', 'remove-timer', 'remove-active', 'error', 'close', 'starved', 'starved-close']
+	foreach scenario : ['start-trigger', 'pause-timer', 'pause-active', 'pause-remove-timer', 'pause-remove-active', 'pause-close', 'remove-timer', 'remove-active', 'error', 'close', 'starved', 'starved-close']
 		test('capture-' + backend + '-' + scenario, capture_lifecycle_test, args: [scenario, backend])
 	endforeach
 endforeach

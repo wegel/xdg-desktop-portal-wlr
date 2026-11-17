@@ -12,21 +12,34 @@ Other portals that can be used include `gtk` for many implementations, `gnome-ke
 ## vwl support branch
 
 Use [`vwl-support`](https://github.com/wegel/xdg-desktop-portal-wlr/tree/vwl-support)
-for [vwl](https://github.com/wegel/vwl). This branch includes upstream master,
-the capture fixes proposed in [PR #407](https://github.com/emersion/xdg-desktop-portal-wlr/pull/407),
-and vwl's custom virtual-output capture source. It supports monitor, window,
-and virtual-output sharing. Virtual outputs appear among the window choices.
-Existing chooser labels and portal service names remain the same.
+for [vwl](https://github.com/wegel/vwl). This branch includes upstream 0.9.0
+(`v0.9.0`, commit `8388b8a`) and vwl's custom virtual-output capture source.
+It supports monitor, window, and virtual-output sharing. Virtual outputs
+appear among the window choices. Existing chooser labels and portal service
+names remain the same.
 
-The branch currently starts from upstream `c0255d7`. We keep the PR's fixes on
-`fix/capture-buffer-lifetime` for upstream review. The
-`fix/capture-buffer-lifetime-0.8.4` branch remains available for testers who
-still need the 0.8.4 base; it is not the branch to use for vwl's virtual outputs.
-`fix/vwl-capture-buffer-lifetime` is an old snapshot, superseded by `vwl-support`.
+Upstream 0.9.0 cancels active captures when their buffers are released. This
+branch also cancels delayed captures, keeps unfinished buffers across pauses,
+and avoids blocking while reading replies for destroyed Wayland objects.
+These additional fixes are proposed in
+[PR #407](https://github.com/emersion/xdg-desktop-portal-wlr/pull/407).
 
-The refreshed branch replaces the old `vwl-support` history. For an existing
-checkout, save any local changes, fetch the fork, and create a fresh local branch
-from its `vwl-support` branch before rebuilding. A fresh clone is also fine:
+The 0.9.0 update merges upstream into the published branch, so existing users
+of the October 21 refresh can update with a normal pull. Save local changes
+before updating, and fetch tags so package tools can find `v0.9.0`:
+
+```sh
+git fetch origin --tags
+git switch vwl-support
+git pull --ff-only origin vwl-support
+meson setup --reconfigure build
+meson compile -C build
+meson test -C build --print-errorlogs
+```
+
+If your checkout predates the October 21 refresh, its history differs from the
+published branch. Save local changes and create a fresh local branch from
+`origin/vwl-support`, or clone again:
 
 ```sh
 git clone --branch vwl-support https://github.com/wegel/xdg-desktop-portal-wlr.git
@@ -35,6 +48,11 @@ meson setup build
 meson compile -C build
 meson test -C build --print-errorlogs
 ```
+
+The `fix/capture-buffer-lifetime` branch is for upstream review. The
+`fix/capture-buffer-lifetime-0.8.4` branch remains available for testers who
+need 0.8.4; it does not include vwl's virtual-output support.
+`fix/vwl-capture-buffer-lifetime` is an old snapshot, superseded by `vwl-support`.
 
 The portal reads vwl's virtual-output names and geometry from `VWL_SOCKET`,
 or `$XDG_RUNTIME_DIR/vwl.sock` when that variable is unset. Run the portal in
@@ -110,7 +128,7 @@ please open an issue or come chat with us in #sway on Libera Chat.
 ## Contributing
 
 If you're interested in testing or development, check out
-[CONTRIBUTING.md] for more information.
+[CONTRIBUTING.md] for more information. We follow the [wlroots code style].
 
 ## License
 
@@ -119,4 +137,5 @@ MIT
 [xdg-desktop-portal]: https://github.com/flatpak/xdg-desktop-portal
 [FAQ]: https://github.com/emersion/xdg-desktop-portal-wlr/wiki/FAQ
 [screencast compatibility]: https://github.com/emersion/xdg-desktop-portal-wlr/wiki/Screencast-Compatibility
-[CONTRIBUTING.md]: CONTRIBUTING.md
+[CONTRIBUTING.md]: https://github.com/emersion/.github/blob/main/CONTRIBUTING.md
+[wlroots code style]: https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/master/CONTRIBUTING.md?ref_type=heads#style-reference

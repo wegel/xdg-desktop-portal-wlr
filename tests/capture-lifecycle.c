@@ -44,7 +44,11 @@ int pw_stream_queue_buffer(struct pw_stream *stream, struct pw_buffer *buf) {
 	queued++;
 	return 0;
 }
-int pw_stream_trigger_process(struct pw_stream *stream) { return 0; }
+static bool process_pending;
+int pw_stream_trigger_process(struct pw_stream *stream) {
+	process_pending = true;
+	return 0;
+}
 void xdpw_buffer_destroy(struct xdpw_buffer *buf) {
 	assert(!active);
 	assert(wl_list_empty(&state.timers));
@@ -69,15 +73,21 @@ void xdpw_wlr_sc_frame_capture(struct xdpw_screencast_instance *c) {
 	capture(c);
 	c->wlr_session.wlr_frame = (void *)&fake_frame;
 }
-void xdpw_ext_ic_session_close(struct xdpw_screencast_instance *c) {
+void xdpw_ext_ic_frame_cancel(struct xdpw_screencast_instance *c) {
 	if (c->ext_session.frame) {
 		ext_image_copy_capture_frame_v1_destroy(c->ext_session.frame);
 		c->ext_session.frame = NULL;
 	}
 }
-void xdpw_wlr_sc_session_close(struct xdpw_screencast_instance *c) {
+void xdpw_ext_ic_session_close(struct xdpw_screencast_instance *c) {
+	xdpw_ext_ic_frame_cancel(c);
+}
+void xdpw_wlr_sc_frame_cancel(struct xdpw_screencast_instance *c) {
 	active = false;
 	c->wlr_session.wlr_frame = NULL;
+}
+void xdpw_wlr_sc_session_close(struct xdpw_screencast_instance *c) {
+	xdpw_wlr_sc_frame_cancel(c);
 }
 uint32_t wl_proxy_get_version(struct wl_proxy *proxy) { return 1; }
 struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
@@ -90,6 +100,10 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
 
 static void change_state(enum pw_stream_state old, enum pw_stream_state next) {
 	pwr_handle_stream_state_changed(&cast, old, next, NULL);
+	if (process_pending) {
+		process_pending = false;
+		pwr_handle_stream_on_process(&cast);
+	}
 }
 static void dispatch_timers(void) {
 	while (!wl_list_empty(&state.timers)) {
@@ -126,6 +140,25 @@ int main(int argc, char **argv) {
 	wl_list_init(&buffer.link);
 	pw_buffer.buffer = &spa_buffer;
 	pw_buffer.user_data = &buffer;
+
+	if (strcmp(argv[1], "start-trigger") == 0) {
+		pwr_handle_stream_state_changed(&cast, PW_STREAM_STATE_PAUSED,
+			PW_STREAM_STATE_STREAMING, NULL);
+		assert(process_pending);
+		assert(dequeued == 0 && captures == 0);
+		assert(wl_list_empty(&state.timers));
+		process_pending = false;
+		pwr_handle_stream_on_process(&cast);
+		assert(dequeued == 1);
+		// A second process event must not schedule a duplicate capture.
+		pwr_handle_stream_on_process(&cast);
+		assert(wl_list_length(&state.timers) == 1);
+		dispatch_timers();
+		assert(captures == 1);
+		xdpw_wlr_session_close(&cast);
+		assert(!active && wl_list_empty(&state.timers));
+		return 0;
+	}
 
 	if (strncmp(argv[1], "starved", 7) == 0) {
 		available = false;
@@ -186,7 +219,7 @@ int main(int argc, char **argv) {
 				}
 			}
 			// Simulate a successful frame after resume. Only it may reach the consumer.
-			xdpw_wlr_frame_capture_cancel(&cast);
+			xdpw_wlr_frame_cancel(&cast);
 			cast.current_frame.tv_sec = 42;
 			cast.current_frame.tv_nsec = 123000000;
 			cast.current_frame.completed = true;

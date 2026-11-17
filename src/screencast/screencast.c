@@ -343,7 +343,7 @@ static int method_screencast_create_session(sd_bus_message *msg, void *data,
 	}
 
 	sd_bus_message_unref(reply);
-	return 0;
+	return 1;
 }
 
 static int method_screencast_select_sources(sd_bus_message *msg, void *data,
@@ -352,7 +352,7 @@ static int method_screencast_select_sources(sd_bus_message *msg, void *data,
 	struct xdpw_screencast_context *ctx = &state->screencast;
 
 	int ret = 0;
-	struct xdpw_session *sess, *tmp_s;
+	struct xdpw_session *sess, *iter, *tmp_s;
 	sd_bus_message *reply = NULL;
 
 	logprint(INFO, "dbus: select sources method invoked");
@@ -372,15 +372,17 @@ static int method_screencast_select_sources(sd_bus_message *msg, void *data,
 	logprint(INFO, "dbus: app_id: %s", app_id);
 
 	sess = NULL;
-	wl_list_for_each_reverse_safe(sess, tmp_s, &state->xdpw_sessions, link) {
-		if (strcmp(sess->session_handle, session_handle) == 0) {
-				logprint(DEBUG, "dbus: select sources: found matching session %s", sess->session_handle);
+	wl_list_for_each_reverse_safe(iter, tmp_s, &state->xdpw_sessions, link) {
+		if (strcmp(iter->session_handle, session_handle) == 0) {
+				logprint(DEBUG, "dbus: select sources: found matching session %s", iter->session_handle);
+				sess = iter;
 				break;
 		}
 	}
 	if (!sess) {
-		logprint(WARN, "dbus: select sources: no matching session %s found", sess->session_handle);
-		goto error;
+		logprint(WARN, "dbus: select sources: no matching session %s found", session_handle);
+		return sd_bus_error_setf(ret_error, SD_BUS_ERROR_INVALID_ARGS,
+			"Unknown session %s", session_handle);
 	}
 
 	// default to embedded cursor mode if not specified
@@ -528,7 +530,7 @@ static int method_screencast_select_sources(sd_bus_message *msg, void *data,
 		return ret;
 	}
 	sd_bus_message_unref(reply);
-	return 0;
+	return 1;
 
 error:
 	if (sess) {
@@ -548,7 +550,7 @@ error:
 		return ret;
 	}
 	sd_bus_message_unref(reply);
-	return -1;
+	return 1;
 }
 
 static int method_screencast_start(sd_bus_message *msg, void *data,
@@ -602,6 +604,7 @@ static int method_screencast_start(sd_bus_message *msg, void *data,
 		if (strcmp(sess->session_handle, session_handle) == 0) {
 				logprint(DEBUG, "dbus: start: found matching session %s", sess->session_handle);
 				cast = sess->screencast_data.screencast_instance;
+				break;
 		}
 	}
 	if (!cast) {
@@ -756,7 +759,7 @@ static int method_screencast_start(sd_bus_message *msg, void *data,
 	}
 	sd_bus_message_unref(reply);
 
-	return 0;
+	return 1;
 }
 
 static const sd_bus_vtable screencast_vtable[] = {

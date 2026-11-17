@@ -77,23 +77,20 @@ void xdpw_wlr_frame_capture(struct xdpw_screencast_instance *cast) {
 	}
 }
 
-void xdpw_wlr_frame_capture_cancel(struct xdpw_screencast_instance *cast) {
+void xdpw_wlr_frame_cancel(struct xdpw_screencast_instance *cast) {
 	xdpw_destroy_timer(cast->capture_timer);
 	cast->capture_timer = NULL;
 
 	if (use_ext_image_copy_capture(cast)) {
-		if (cast->ext_session.frame) {
-			ext_image_copy_capture_frame_v1_destroy(cast->ext_session.frame);
-			cast->ext_session.frame = NULL;
-		}
+		xdpw_ext_ic_frame_cancel(cast);
 	} else if (cast->target->type == MONITOR && cast->ctx->screencopy_manager) {
-		xdpw_wlr_sc_session_close(cast);
+		xdpw_wlr_sc_frame_cancel(cast);
 	}
 	cast->current_frame.damage.size = 0;
 }
 
 void xdpw_wlr_session_close(struct xdpw_screencast_instance *cast) {
-	xdpw_wlr_frame_capture_cancel(cast);
+	xdpw_wlr_frame_cancel(cast);
 	if (use_ext_image_copy_capture(cast)) {
 		xdpw_ext_ic_session_close(cast);
 	} else if (cast->target->type == MONITOR && cast->ctx->screencopy_manager) {
